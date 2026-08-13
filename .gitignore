@@ -1,0 +1,10 @@
+
+# Riptide artifacts (cloud-synced)
+.humanlayer/tasks/
+
+.DS_Store
+**/.DS_Store
+
+/dist/
+/mmmcp
+/.verify-image.*

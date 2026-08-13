@@ -1,0 +1,128 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build binary
+        run: go build -o ./mmmcp ./cmd/mmmcp
+
+  validate:
+    name: Validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.12
+      - name: Check GoReleaser configuration
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: latest
+          args: check
+      - name: Build release snapshot
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: latest
+          args: release --snapshot --clean
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - name: Build container
+        run: docker build -t mmmcp:test .
+      - name: Verify container
+        run: ./scripts/verify-image.sh mmmcp:test
+
+  unit-tests:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Unit tests
+        run: go test ./...
+      - name: Race tests
+        run: go test -race ./...
+
+  integration-tests:
+    name: Integration tests
+    needs: build
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_DB: mmmcp
+          POSTGRES_USER: mmmcp
+          POSTGRES_PASSWORD: mmmcp
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U mmmcp -d mmmcp"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_DATABASE: mmmcp
+          MYSQL_USER: mmmcp
+          MYSQL_PASSWORD: mmmcp
+          MYSQL_ROOT_PASSWORD: root
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -ummmcp -pmmmcp"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      MMMCP_TEST_POSTGRES_DSN: postgres://mmmcp:mmmcp@127.0.0.1:5432/mmmcp?sslmode=disable
+      MMMCP_TEST_MYSQL_DSN: mmmcp:mmmcp@tcp(127.0.0.1:3306)/mmmcp?parseTime=true
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v8
+        with:
+          name: mmmcp-linux
+          path: .
+      - name: Prepare binary
+        run: chmod +x ./mmmcp
+      - name: Database integration tests
+        run: go test -tags=integration ./storage/...
+      - name: Everything server integration test
+        env:
+          MMMCP_TEST_BINARY: ${{ github.workspace }}/mmmcp
+        run: go test -count=1 -tags=integration -timeout=3m ./integration/everything
